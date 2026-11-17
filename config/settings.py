@@ -12,9 +12,8 @@ env = environ.Env()
 if not os.environ.get("VERCEL") and (BASE_DIR / ".env").is_file():
     environ.Env.read_env(BASE_DIR / ".env", overwrite=False)
 
-DEBUG = env.bool("DEBUG", default=False)
-if os.environ.get("VERCEL") and DEBUG:
-    raise ImproperlyConfigured("DEBUG must be False on Vercel.")
+# Hosted deployments always use production security, even if a local .env was imported.
+DEBUG = False if os.environ.get("VERCEL") else env.bool("DEBUG", default=False)
 SECRET_KEY = env("SECRET_KEY")
 if not SECRET_KEY or (not DEBUG and len(SECRET_KEY) < 50):
     raise ImproperlyConfigured("Set a unique SECRET_KEY of at least 50 characters.")

@@ -72,7 +72,8 @@ Settings read `.env` locally; existing process variables take precedence. Vercel
 uses its environment variables directly and does not read `.env`.
 
 - `SECRET_KEY`: required random secret, at least 50 characters in production.
-- `DEBUG`: defaults to `False`; set `True` only locally. Vercel rejects `True`.
+- `DEBUG`: defaults to `False`; set `True` only locally. Vercel always forces it to
+  `False`, regardless of an imported environment value.
 - `ALLOWED_HOSTS`: comma-separated backend hostnames without schemes or paths.
   Production requires explicit hosts and rejects `*`. On Vercel, exact project
   hostnames are also populated from system environment variables automatically.

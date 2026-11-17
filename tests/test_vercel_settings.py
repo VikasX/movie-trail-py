@@ -3,12 +3,15 @@ import os
 import subprocess
 import sys
 
+import pytest
 
-def test_vercel_allows_only_project_hosts():
+
+@pytest.mark.parametrize("debug_value", ["False", "True", "1"])
+def test_vercel_allows_only_project_hosts_and_disables_debug(debug_value):
     environment = {
         **os.environ,
         "VERCEL": "1",
-        "DEBUG": "False",
+        "DEBUG": debug_value,
         "ALLOWED_HOSTS": "api.example.com",
         "VERCEL_URL": "cinescope-deployment.vercel.app",
         "VERCEL_BRANCH_URL": "cinescope-branch.vercel.app",
@@ -18,7 +21,11 @@ def test_vercel_allows_only_project_hosts():
         [
             sys.executable,
             "-c",
-            "import json; from config.settings import ALLOWED_HOSTS; "
+            "import json; from config.settings import ALLOWED_HOSTS, DEBUG, "
+            "SECURE_SSL_REDIRECT, SESSION_COOKIE_SECURE; "
+            "assert DEBUG is False; "
+            "assert SECURE_SSL_REDIRECT is True; "
+            "assert SESSION_COOKIE_SECURE is True; "
             "print(json.dumps(ALLOWED_HOSTS))",
         ],
         env=environment,
