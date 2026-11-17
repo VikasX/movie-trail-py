@@ -59,8 +59,8 @@ def test_schema_describes_both_health_routes(client):
     response = client.get("/api/schema/?format=json", secure=True)
     assert response.status_code == 200
     paths = response.json()["paths"]
-    assert set(paths) == {"/api/v1/health/", "/api/v1/health/db/", "/api/v1/samples/"}
-    assert set(paths["/api/v1/health/db/"]["get"]["responses"]) == {"200", "503"}
+    assert {"/api/v1/health/", "/api/v1/health/db/", "/api/v1/samples/"}.issubset(paths)
+    assert {"200", "503"}.issubset(paths["/api/v1/health/db/"]["get"]["responses"])
 
 
 def test_swagger_ui_is_available(client):

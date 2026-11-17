@@ -39,14 +39,23 @@ INSTALLED_APPS = [
     "django_filters",
     "drf_spectacular",
     "core.apps.CoreConfig",
+    "allauth",
+    "allauth.account",
+    "allauth.socialaccount",
+    "allauth.socialaccount.providers.google",
+    "accounts",
+    "catalog",
+    "library",
 ]
 MIDDLEWARE = [
+    "common.middleware.RequestMiddleware",
     "django.middleware.security.SecurityMiddleware",
     "corsheaders.middleware.CorsMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
+    "allauth.account.middleware.AccountMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
@@ -96,7 +105,8 @@ STATIC_ROOT = BASE_DIR / "staticfiles"
 REST_FRAMEWORK = {
     "DEFAULT_RENDERER_CLASSES": ["rest_framework.renderers.JSONRenderer"],
     "DEFAULT_PARSER_CLASSES": ["rest_framework.parsers.JSONParser"],
-    "DEFAULT_AUTHENTICATION_CLASSES": ["rest_framework.authentication.SessionAuthentication"],
+    "DEFAULT_AUTHENTICATION_CLASSES": ["common.authentication.SessionAuth"],
+    "EXCEPTION_HANDLER": "common.errors.handler",
     "DEFAULT_PERMISSION_CLASSES": ["rest_framework.permissions.IsAuthenticated"],
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
     "PAGE_SIZE": 20,
@@ -104,6 +114,7 @@ REST_FRAMEWORK = {
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
 }
 SPECTACULAR_SETTINGS = {
+    "DEFAULT_GENERATOR_CLASS": "common.schema.ContractSchemaGenerator",
     "TITLE": "CineScope API",
     "DESCRIPTION": "Backend for the CineScope movie and TV series discovery application.",
     "VERSION": "1.0.0",
@@ -117,12 +128,13 @@ SPECTACULAR_SETTINGS = {
 }
 
 CORS_ALLOWED_ORIGINS = env.list("CORS_ALLOWED_ORIGINS", default=[])
-CORS_URLS_REGEX = r"^/api/.*$"
-CORS_ALLOW_CREDENTIALS = False
+CORS_URLS_REGEX = r"^/(api|accounts)/.*$"
+CORS_ALLOW_CREDENTIALS = True
 CSRF_TRUSTED_ORIGINS = env.list("CSRF_TRUSTED_ORIGINS", default=[])
 SESSION_COOKIE_SECURE = not DEBUG
 CSRF_COOKIE_SECURE = not DEBUG
 SESSION_COOKIE_HTTPONLY = True
+CSRF_COOKIE_HTTPONLY = True
 SECURE_SSL_REDIRECT = not DEBUG
 SECURE_HSTS_SECONDS = 31536000 if not DEBUG else 0
 SECURE_HSTS_INCLUDE_SUBDOMAINS = False
@@ -134,11 +146,93 @@ X_FRAME_OPTIONS = "DENY"
 if os.environ.get("VERCEL"):
     SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 
+FRONTEND_PUBLIC_ORIGIN = env(
+    "FRONTEND_PUBLIC_ORIGIN", default="http://localhost:5173" if DEBUG else ""
+).rstrip("/")
+BACKEND_PUBLIC_ORIGIN = env(
+    "BACKEND_PUBLIC_ORIGIN", default="http://localhost:8000" if DEBUG else ""
+).rstrip("/")
+if FRONTEND_PUBLIC_ORIGIN and FRONTEND_PUBLIC_ORIGIN not in CSRF_TRUSTED_ORIGINS:
+    CSRF_TRUSTED_ORIGINS.append(FRONTEND_PUBLIC_ORIGIN)
+CSRF_FAILURE_VIEW = "common.middleware.csrf_failure"
+CSRF_COOKIE_SAMESITE = SESSION_COOKIE_SAMESITE = "Lax"
+SESSION_COOKIE_AGE = 14 * 86400
+SESSION_COOKIE_DOMAIN = CSRF_COOKIE_DOMAIN = None
+AUTHENTICATION_BACKENDS = [
+    "django.contrib.auth.backends.ModelBackend",
+    "allauth.account.auth_backends.AuthenticationBackend",
+]
+ACCOUNT_LOGIN_METHODS = {"email"}
+ACCOUNT_SIGNUP_FIELDS = ["email*", "password1*", "password2*"]
+ACCOUNT_EMAIL_VERIFICATION = "mandatory"
+ACCOUNT_ADAPTER = "accounts.oauth.AccountAdapter"
+SOCIALACCOUNT_ADAPTER = "accounts.oauth.SocialAdapter"
+SOCIALACCOUNT_EMAIL_AUTHENTICATION = False
+SOCIALACCOUNT_EMAIL_AUTHENTICATION_AUTO_CONNECT = False
+SOCIALACCOUNT_STORE_TOKENS = False
+SOCIALACCOUNT_PROVIDERS = {
+    "google": {
+        "provider_class": "accounts.oauth.GoogleProvider",
+        "SCOPE": ["openid", "email", "profile"],
+        "OAUTH_PKCE_ENABLED": True,
+        "APPS": [
+            {
+                "client_id": env("GOOGLE_CLIENT_ID", default=""),
+                "secret": env("GOOGLE_CLIENT_SECRET", default=""),
+                "key": "",
+            }
+        ],
+    }
+}
+SOCIALACCOUNT_REQUESTS_TIMEOUT = 5
+LOGIN_REDIRECT_URL = "/discover"
+EMAIL_BACKEND = env(
+    "EMAIL_BACKEND",
+    default="django.core.mail.backends.console.EmailBackend"
+    if DEBUG
+    else "django.core.mail.backends.smtp.EmailBackend",
+)
+EMAIL_HOST = env("EMAIL_HOST", default="")
+EMAIL_PORT = env.int("EMAIL_PORT", default=587)
+EMAIL_HOST_USER = env("EMAIL_HOST_USER", default="")
+EMAIL_HOST_PASSWORD = env("EMAIL_HOST_PASSWORD", default="")
+EMAIL_USE_TLS = env.bool("EMAIL_USE_TLS", default=True)
+EMAIL_TIMEOUT = 5
+DEFAULT_FROM_EMAIL = env("DEFAULT_FROM_EMAIL", default="cinescope@localhost")
+TMDB_BASE_URL = env("TMDB_BASE_URL", default="https://api.themoviedb.org/3").rstrip("/")
+TMDB_READ_ACCESS_TOKEN = env("TMDB_READ_ACCESS_TOKEN", default="")
+TMDB_API_KEY = env("TMDB_API_KEY", default="")
+SHARE_TOKEN_ENCRYPTION_KEY = env("SHARE_TOKEN_ENCRYPTION_KEY", default="")
+CACHES = {
+    "default": {
+        "BACKEND": "django.core.cache.backends.db.DatabaseCache",
+        "LOCATION": "cinescope_cache",
+        "TIMEOUT": 300,
+        "OPTIONS": {"MAX_ENTRIES": 10000},
+    }
+}
+API_THROTTLING_ENABLED = True
+DATA_UPLOAD_MAX_MEMORY_SIZE = 1048576
+
 LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,
+    "filters": {"redact": {"()": "common.logging.RedactCapabilities"}},
     "formatters": {"standard": {"format": "{asctime} {levelname} {name}: {message}", "style": "{"}},
-    "handlers": {"console": {"class": "logging.StreamHandler", "formatter": "standard"}},
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+            "formatter": "standard",
+            "filters": ["redact"],
+        }
+    },
     "root": {"handlers": ["console"], "level": env("LOG_LEVEL", default="INFO")},
     "loggers": {"django": {"handlers": ["console"], "level": "INFO", "propagate": False}},
 }
+# HTTP client URLs can contain credential query parameters; don't log them.
+LOGGING["loggers"].update(
+    {
+        name: {"handlers": ["console"], "level": "WARNING", "propagate": False}
+        for name in ("httpx", "httpcore", "allauth")
+    }
+)

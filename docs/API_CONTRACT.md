@@ -1,9 +1,10 @@
 # CineScope REST API contract
 
-Version: **1.0.0-draft.2**. Status: proposed implementation specification, 2026-11-18.
+Version: **1.0.0-draft.2**. Status: implementation contract, 2026-11-18.
 
-This is a documentation-only deliverable. Existing health/sample endpoints and
-Django admin remain unchanged. Every other endpoint below is planned, not deployed.
+The complete backend now implements this contract locally, preserving existing
+health/sample endpoints and Django admin. Production rollout and external OAuth/email
+verification are tracked separately in README.md; no deployment is implied here.
 `openapi.yaml` is the machine-readable companion. This Markdown defines normative
 cross-field rules, algorithms and flows that OpenAPI 3.0 cannot fully express.
 Examples use fictional provider/trailer metadata; they are not promises of live availability.
@@ -20,7 +21,8 @@ Use Django ORM and DRF; no FastAPI, SQLAlchemy, LLM, workers or Redis are requir
 Pandas/NumPy are optional implementation tools only if profiling justifies them;
 small bounded recommendation lists need ordinary Python, not a new service.
 
-- Base prefix `/api/v1/`, trailing slashes required. Count operations by method + path.
+- Product base prefix `/api/v1/`, trailing slashes required; only the internal
+  allauth callback uses `/accounts/google/login/callback/`. Count operations by method + path.
 - JSON snake_case, UTF-8; dates `YYYY-MM-DD`, UTC timestamps with `Z`; UUIDs strings.
 - `media_type` is exactly `movie` or `tv`; composite key `(media_type, tmdb_id)`
   everywhere, including RTK cache tags and localStorage. Never join on TMDB ID alone.
@@ -66,9 +68,9 @@ login. If custom subdomains are used instead, Django cookies remain host-only on
 `credentials:'include'`. Never wildcard credentialed CORS or allow
 `SameSite=None` as a fix for unrelated third-party `*.vercel.app` domains.
 
-GET `/api/v1/auth/csrf/` sets the masked CSRF cookie and returns the masked token.
-Every unsafe browser request sends `X-CSRFToken` plus the CSRF cookie. Login/register
-and guest sync rotate or replace the token as documented; bootstrap again after
+GET `/api/v1/auth/csrf/` sets the CSRF secret cookie and returns a masked token.
+Every unsafe browser request sends `X-CSRFToken` plus the CSRF cookie. Successful login rotates the token; registration and guest sync do not log in or
+rotate it; bootstrap again after
 OAuth before `/me/` or guest sync. Both app topologies require HTTPS, exact host
 allowlists, no rewrite of internal callback locations, and private/no-store auth,
 library, collection, sync and share capability responses.
@@ -97,6 +99,21 @@ social login without a provider-verified email fails with auth=verified_email_re
 Provider denial/valid-state failures redirect with `auth=cancelled|failed|account_link_required|verified_email_required`;
 invalid state returns JSON 400. Provider code/errors are not copied to frontend URLs.
 Callback state is tied to the initiating browser session; no caller-controlled redirect.
+Enable allauth Google PKCE and openid/email/profile scopes. The start facade delegates
+authorization construction and state/session storage to allauth. No competing custom
+versioned callback exists. Invalid-state JSON normalization is an integration adapter
+at the existing internal callback, not a second route. Local React and Django must
+both use localhost consistently (e.g. ports 5173 and 8000); local HTTP alone uses
+Secure=False. Production Google redirect_uri must be registered exactly for the
+chosen public canonical origin plus /accounts/google/login/callback/. Credentials
+already exist; registering the final production host is still required.
+For custom subdomains the initiating API host and callback host must match. For the
+proxy topology both /api and /accounts must share the frontend browser host. Trust
+forwarded host/protocol only if the managed proxy strips spoofed input; preserve
+multiple Set-Cookie headers and use canonical external URLs. Add exact React origin
+to CSRF_TRUSTED_ORIGINS even behind a proxy; same-origin calls require no CORS grant.
+Keep 14-day sessions and host-only cookie domains; do not share cookies across all
+subdomains or treat SameSite=None as a workaround for blocked third-party cookies.
 
 Continue as Guest is a frontend action: no guest account, token, database session
 creation or guest-login endpoint. Store library, watched state, custom collections
@@ -122,6 +139,17 @@ these exact stable keys and localized display names. Only keys represented by a
 media branch's upstream genre mapping match that branch. Do not invent TV horror
 or movie reality IDs. Map the current upstream genre lists by a reviewed mapping,
 not translated display names. Genre changes require contract/mapping review.
+
+For selected genres Django maps each canonical key per movie/TV branch, sends unique
+mapped IDs comma-separated in with_genres (AND, not pipe/OR), then rechecks every
+canonical predicate against returned genre_ids. For example animation,family with
+year_from=2025 and year_to=2025 must satisfy both genres and the year. TV combined
+Action & Adventure satisfies action and adventure; Sci-Fi & Fantasy satisfies sci-fi
+and fantasy. Deduplicate their shared ID but retain canonical checks; no finer TV
+distinction is promised. Unmappable required keys exclude that branch. Mood OR groups
+are evaluated locally if a combined AND/OR expression cannot be pushed down without
+weakening user filters; do not fan out into one request per genre.
+
 Year ranges are inclusive and use primary release date/movie or first-air date/TV;
 single-year UI sends equal year_from/year_to. Reject inverted year/runtime bounds.
 Rating is TMDB's 0–10 score, not a user's rating. Runtime/movie is total movie minutes;
@@ -140,17 +168,29 @@ series-level TV credits. This does not promise exhaustive episode-director searc
 q/person/feed conflicts are rejected, not ignored. All returned cards satisfy all
 active filters. Unsupported TMDB filter combinations are post-filtered in Django.
 
-**Bounded catalogue contract:** TMDB does not offer one globally sorted/filterable
-movie+TV+person-search result set. v1 intentionally exposes a bounded candidate pool,
-not an exhaustive catalogue count. Fetch up to the first five upstream pages per
-selected media branch (at most 100 each, 200 for all). Title search uses movie/TV
-search, people search up to 100 people; person credits take up to 200 ranked eligible
-credits. Normalize, deduplicate composite keys, hydrate metadata as needed, filter,
-then sort and paginate. Upstream-supported filters are pushed down before the cap.
-Post-filtered searches may therefore be empty even if a matching title exists beyond
-the candidate window. UI must say "matching results in this selection", not claim
-"all TMDB results". `meta.coverage=bounded_candidates` and candidate_limit state the
-limit; this is a deliberate product constraint, not an implementation accident.
+**Bounded catalogue contract, optimized for Vercel:** at most two upstream list
+calls and 40 source candidates per snapshot. All uses one movie page and one TV
+page (20 each); a single media type or people search can use two pages. Person
+credits uses one combined-credit call and retains at most 40 ranked eligible refs.
+Push supported filters down first; normalize, deduplicate, enforce all predicates,
+sort and freeze. Never repeatedly refill until enough matches are found. A branch
+excluded by an unmappable genre does not donate its quota to the other branch.
+
+Cards use list/cache fields; never fetch cast, trailers, availability or keywords
+per card. Runtime stays nullable without an active runtime filter. Runtime-filtered
+requests first select a deterministic six-candidate window (three per All branch,
+six for single media) before runtime cache lookup, then hydrate only those missing
+details (maximum six). Cached data avoids calls but never expands this window.
+Normalize TV median episode runtime and recheck it rather than assuming TMDB's
+native runtime predicate matches the median. Required unresolved data produces
+503/504, not silent exclusions or a partial snapshot. Other filters run from list
+fields whenever possible. The same limits apply to recommendation candidates.
+
+candidate_limit is 40 normally, 6 for runtime filtering (20/3 if an All branch is
+excluded). Count is exact only within that filtered snapshot, not the whole TMDB
+catalogue. Post-filtered results can be empty even if matches exist beyond the window;
+UI must say "matches in this selection". Sorting is within the window, never globally.
+Subsequent pages read only the same PostgreSQL snapshot, with no upstream calls.
 
 Cache the ordered normalized results as a five-minute immutable snapshot in shared
 PostgreSQL-backed Django cache (no in-memory-only snapshot on Vercel). First page
@@ -180,8 +220,9 @@ Mood mapping v2 (no unvalidated keyword IDs):
 - `relaxing` → Relaxing: comedy OR family OR documentary.
 - `family_night` → Family Night: animation AND family.
 
-Active user filters are hard constraints. Mood genres are an additional OR group,
-ANDed with the selected genre group; conflicts yield an empty result, never relaxation.
+Active user filters are hard constraints: all selected genres must match. Four mood
+groups use OR internally; Family Night requires animation AND family. The mood predicate
+is ANDed with all active filters; conflicts yield an empty result, never relaxation.
 Keyword lists start empty until curated TMDB IDs are verified. Mapping changes bump
 mapping_version and invalidate recommendation caches. Surprise picks uniformly from
 eligible bounded candidates after exclusions (not uniformly from all TMDB), returns
@@ -224,7 +265,10 @@ one `auto:genre:<canonical-key>` for each represented genre;
 `auto:decade:<YYYY>` for 10-year release/first-air groups;
 `auto:highly-rated` for known TMDB rating >=8.0;
 `auto:movies`; `auto:tv`; and `auto:watched`.
-Unknown dates/ratings are excluded only from the applicable groups. Empty automatic
+Decade is floor(year/10)*10 (2020 means 2020–2029), using release/first-air year.
+Unknown dates/ratings are excluded only from the applicable groups. Group using
+stored last-known metadata; no per-library-title GET hydration. Invalidate computed
+groups when saved state or metadata changes. Empty automatic
 groups are omitted.
 They use Collection schema kind=automatic, nullable timestamps, sharing_enabled=false,
 share_url=null. Lists combine custom (updated_at desc, UUID tie) then automatic (ID asc).
@@ -249,8 +293,10 @@ includes only collection name and normalized title items (no owner email, user I
 saved/watched state, internal collection ID or token echo). Disable/delete revokes
 immediately on every page, including old snapshots; re-enable rotates token. Public
 responses no-store and no-referrer; redact tokens from application/proxy analytics.
-Links point to public JSON API; frontend share page can wrap it, with final public
-frontend hostname to be configured. Anyone with link may read while enabled.
+Every generated URL points to the public React /shared/<token> page. Anyone with
+the link may browse the collection and play trailers using the public title-details
+API and YouTube embeds without authentication. Revocation blocks collection reads,
+not independently public title details. The token is never forwarded to YouTube/TMDB.
 
 ## Guest synchronization algorithm
 
@@ -300,7 +346,7 @@ source collections. An empty payload succeeds with zero counts. Recent history i
 excluded. Data can include concurrent local edits: frontend freezes snapshot for
 this sync job and reconciles accepted keys, rather than deleting the whole namespace.
 
-## Persistence plan (design only; do not migrate from this document)
+## Persistence architecture (implemented through Django migrations)
 
 - **User**: existing django.contrib.auth.User integer PK retained. Username remains
   internal; authentication facade uses normalized email. Add a database UniqueConstraint
@@ -348,7 +394,9 @@ state; use ORM/DB-safe atomic operations for coordination, not process-local glo
 Do not claim stock DRF cache throttles are exact under races; approximate client
 limits plus explicit outbound semaphore/backoff protect TMDB. Cache rows/expired
 receipts may be pruned through maintenance commands outside request critical paths.
-No proposed domain model or constraint is implemented by these docs.
+Migrations implement this architecture; the existing User model is retained.
+ExternalIdentity is supplied by allauth SocialAccount; AccountToken is application-owned.
+CacheLease supplies bounded shared refresh coordination in addition to DatabaseCache.
 
 Persist: account identity/preferences; saved/watched and dates; custom collection
 membership/share state; bounded recent; sync mappings/receipts; referenced title
@@ -425,7 +473,8 @@ and property examples are fully specified in openapi.yaml components.schemas.
 The X-CSRFToken header requires the CSRF cookie too; it is not an auth credential.
 All errors use the shared envelope except explicitly labelled legacy scaffold errors.
 
-**Total: 36 method/path operations on 29 distinct paths.**
+**Total: 36 method/path operations on 29 distinct paths: 35 versioned API operations
+(32 proposed + 3 existing scaffold) and one internal django-allauth Google callback.**
 - System: 3 operations.
 - Metadata: 1 operations.
 - Authentication: 12 operations.
@@ -559,11 +608,51 @@ Success: HTTP 200.
   ],
   "moods": [
     {
+      "key": "feel_good",
+      "label": "Feel-Good",
+      "genre_keys": [
+        "comedy",
+        "animation",
+        "family"
+      ],
+      "keyword_ids": []
+    },
+    {
       "key": "mind_bending",
       "label": "Mind-Bending",
       "genre_keys": [
-        "drama",
+        "sci-fi",
+        "mystery",
+        "fantasy"
+      ],
+      "keyword_ids": []
+    },
+    {
+      "key": "dark",
+      "label": "Dark",
+      "genre_keys": [
+        "thriller",
+        "horror",
+        "crime"
+      ],
+      "keyword_ids": []
+    },
+    {
+      "key": "relaxing",
+      "label": "Relaxing",
+      "genre_keys": [
+        "comedy",
+        "family",
         "documentary"
+      ],
+      "keyword_ids": []
+    },
+    {
+      "key": "family_night",
+      "label": "Family Night",
+      "genre_keys": [
+        "animation",
+        "family"
       ],
       "keyword_ids": []
     }
@@ -914,6 +1003,9 @@ Possible errors:
 - HTTP 429: Rate limited. `{"error":{"code":"rate_limited","message":"Rate limited","fields":{},"request_id":"req-example"}}`
 - HTTP 503: Service unavailable. `{"error":{"code":"service_unavailable","message":"Service unavailable","fields":{},"request_id":"req-example"}}`
 
+
+Additional rule: Delegate URL/state/session construction to django-allauth Google with PKCE. redirect_uri is the canonical public origin plus /accounts/google/login/callback/, never an independent facade callback.
+
 ### `GET /accounts/google/login/callback/`
 
 Exchange OAuth code server-side, establish session, redirect to frontend.
@@ -942,6 +1034,9 @@ Possible errors:
 - HTTP 400: Invalid input. `{"error":{"code":"validation_error","message":"Invalid input","fields":{},"request_id":"req-example"}}`
 - HTTP 429: Rate limited. `{"error":{"code":"rate_limited","message":"Rate limited","fields":{},"request_id":"req-example"}}`
 - HTTP 503: Service unavailable. `{"error":{"code":"service_unavailable","message":"Service unavailable","fields":{},"request_id":"req-example"}}`
+
+
+Additional rule: Internal allauth route, not a versioned facade. Local redirect is exactly http://localhost:8000/accounts/google/login/callback/. Start flow delegates to allauth state/session and Google PKCE; production redirect uses the registered public canonical origin. No competing callback route.
 
 ### `GET /api/v1/me/`
 
@@ -1067,13 +1162,13 @@ Success: HTTP 200.
     "snapshot": "d660fc0b-25be-4ea1-9a70-d8b45b4efc24",
     "expires_at": "2026-11-18T10:05:00Z",
     "coverage": "bounded_candidates",
-    "candidate_limit": 200,
+    "candidate_limit": 40,
     "warnings": []
   }
 }
 ```
 
-Validation: q required; first five TMDB search pages become a bounded snapshot. Select person then use titles person_id/person_role; no ambiguous automatic person selection.
+Validation: q required; at most two TMDB search pages (40 people) become a bounded snapshot. Select person then use titles person_id/person_role; no ambiguous automatic person selection.
 
 Possible errors:
 
@@ -1153,7 +1248,7 @@ Success: HTTP 200.
     "snapshot": "d660fc0b-25be-4ea1-9a70-d8b45b4efc24",
     "expires_at": "2026-11-18T10:05:00Z",
     "coverage": "bounded_candidates",
-    "candidate_limit": 200,
+    "candidate_limit": 40,
     "warnings": []
   }
 }
@@ -1170,6 +1265,9 @@ Possible errors:
 - HTTP 502: Invalid upstream response. `{"error":{"code":"upstream_invalid","message":"Invalid upstream response","fields":{},"request_id":"req-example"}}`
 - HTTP 503: Service unavailable. `{"error":{"code":"service_unavailable","message":"Service unavailable","fields":{},"request_id":"req-example"}}`
 - HTTP 504: Upstream timeout. `{"error":{"code":"upstream_timeout","message":"Upstream timeout","fields":{},"request_id":"req-example"}}`
+
+
+Additional rule: AND selected genres after per-media ID mapping; max two list calls/40 source candidates. Runtime filtering uses deterministic six-title window before cache lookup; max six hydrations. No snapshot is published on mandatory upstream failure.
 
 ### `POST /api/v1/recommendations/`
 
@@ -1249,6 +1347,9 @@ Possible errors:
 - HTTP 502: Invalid upstream response. `{"error":{"code":"upstream_invalid","message":"Invalid upstream response","fields":{},"request_id":"req-example"}}`
 - HTTP 503: Service unavailable. `{"error":{"code":"service_unavailable","message":"Service unavailable","fields":{},"request_id":"req-example"}}`
 - HTTP 504: Upstream timeout. `{"error":{"code":"upstream_timeout","message":"Upstream timeout","fields":{},"request_id":"req-example"}}`
+
+
+Additional rule: User filters always AND; four mood groups OR, family_night AND. Keyword IDs disabled in moods-v2. Same two-list/40-candidate or six-runtime-candidate and eight-attempt ceilings as catalogue discovery.
 
 ### `GET /api/v1/titles/{media_type}/{tmdb_id}/`
 
@@ -2257,11 +2358,13 @@ schema changes require changing both in one review. Before implementation, agree
    CSRF and CORS configuration must match the chosen topology. Transactional email
    service/sender remains unconfigured.
 2. **Discovery coverage**: accept the explicit bounded candidate semantics or fund
-   a broader indexed/search solution in a new contract version. This v1 does not
+   a broader indexed/search solution in a new contract version; runtime-filtered
+   results deliberately have a six-title candidate window. This v1 does not
    claim exact global combined TMDB pagination. Episode-director search is excluded.
 3. **Mood curation/automatic collections**: finalized mappings and genre/decade/rating/media/watched grouping
    are executable defaults for coding agents; design screenshots were not supplied,
-   so confirm labels/grouping against finalized UI before implementation.
+   the five specified UI labels and automatic categories are fixed. Keyword IDs are
+   explicitly empty/disabled until verified and versioned; do not invent IDs.
 4. **Sharing URL and encryption**: choose public frontend route/hostname and secret
    management mechanism for encrypted recoverable share tokens; API capability format
    and immediate revocation are fixed. Never place encryption key in Git.
@@ -2274,8 +2377,8 @@ schema changes require changing both in one review. Before implementation, agree
    to consume these planning documents, and no live catalogue calls were made here.
 
 These are recorded decisions/configuration inputs, not permission gates for this
-documentation task. No implementation files, models, migrations, installed dependencies,
-database contents, deployed routes or auth settings were changed for this deliverable.
+contract review. Implementation status, tests and external configuration are documented
+in README.md. Changes to this document alone do not run migrations or deploy code.
 
 ## Primary references consulted
 
@@ -2292,3 +2395,6 @@ database contents, deployed routes or auth settings were changed for this delive
 - [TMDB FAQ](https://developer.themoviedb.org/docs/faq): availability and commercial access.
 - [django-allauth headless specification](https://docs.allauth.org/en/latest/headless/openapi-specification/):
   browser session/CSRF and provider-redirect patterns. CineScope facade remains separate.
+
+- [allauth Google configuration](https://docs.allauth.org/en/latest/socialaccount/providers/google.html): conventional callback path.
+- [Django CSRF](https://docs.djangoproject.com/en/6.0/ref/csrf/): token/cookie and Origin validation.
