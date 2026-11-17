@@ -21,9 +21,10 @@ core/
   urls.py                   Health routes
   views.py                  Liveness and database readiness checks
 tests/                      Health, routing and security tests
-requirements*.in            Direct dependency inputs
+requirements-dev.in         Development dependency input
+uv.lock                     Locked Vercel runtime dependencies
 requirements*.txt           Pinned runtime/development dependencies
-pyproject.toml              pytest, Ruff and Vercel entry point configuration
+pyproject.toml              Runtime dependencies, pytest, Ruff and Vercel entry point
 vercel.json                 Native Django preset and function settings
 .env.example                Environment template without secrets
 ```
@@ -178,13 +179,16 @@ subdomain coverage and browser preloading are intentionally off. Enable these on
 after confirming HTTPS for every affected subdomain and choosing to enroll the
 domain in browser preload lists; HSTS already protects this API host.
 
-Runtime packages are pinned in `requirements.txt`; development packages in
-`requirements-dev.txt` use the same runtime versions. To update, install uv,
-regenerate both files and rerun checks:
+Runtime dependencies are declared in `pyproject.toml`; Vercel installs them using
+`uv.lock`. `requirements.txt` is generated from the same project metadata for pip
+users. Development packages in `requirements-dev.txt` use the same runtime versions.
+To update, edit `pyproject.toml`, install uv, regenerate the lock and requirements
+files, and rerun checks:
 
 ```powershell
-uv pip compile requirements.in --python-version 3.12 --universal -o requirements.txt
-uv pip compile requirements-dev.in -c requirements.txt --python-version 3.12 --universal -o requirements-dev.txt
+uv lock
+uv pip compile pyproject.toml --python-version 3.12 --universal -o requirements.txt
+uv pip compile requirements-dev.in --python-version 3.12 --universal -o requirements-dev.txt
 python -m pip install -r requirements-dev.txt
 ```
 
@@ -193,7 +197,7 @@ python -m pip install -r requirements-dev.txt
 This uses [Vercel's native Django support](https://vercel.com/docs/frameworks/full-stack/django).
 Vercel discovers root `manage.py`; `tool.vercel.entrypoint` selects
 `config.wsgi:application`. Django handles routing without rewrites or `api/index.py`.
-`.python-version` selects Python 3.12. Vercel installs `requirements.txt` and collects
+`.python-version` selects Python 3.12. Vercel installs dependencies from `pyproject.toml` and `uv.lock` and collects
 build-time static assets for its CDN. Runtime code uses PostgreSQL sessions and
 console logs, with no persistent local storage.
 
@@ -284,3 +288,10 @@ The same Supabase superuser also works at `https://YOUR_BACKEND_HOST/admin/` aft
 deployment. Vercel collects the admin's static assets during its build. Admin log
 migrations have been applied locally against Supabase; no admin user is created
 or password hardcoded automatically.
+
+### Vercel dependency installation
+
+Keep `pyproject.toml` and `uv.lock` in Git. Vercel prioritizes the project metadata
+when it is present, so tool-only metadata without a `[project].dependencies` list
+can result in `ModuleNotFoundError: No module named 'django'`. Runtime dependencies
+are now explicitly declared and locked. No custom install command is required.
