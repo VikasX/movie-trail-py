@@ -22,6 +22,8 @@ os.environ["DATABASE_URL"] = "postgresql://unit_test@127.0.0.1:1/unit_test?sslmo
 os.environ["CORS_ALLOWED_ORIGINS"] = "https://frontend.example.com"
 # Set os.environ['CSRF_TRUSTED_ORIGINS']: use the fixed value 'https://frontend.example.com'.
 os.environ["CSRF_TRUSTED_ORIGINS"] = "https://frontend.example.com"
+os.environ["FRONTEND_PUBLIC_ORIGIN"] = "https://frontend.example.com"
+os.environ["BACKEND_PUBLIC_ORIGIN"] = "https://testserver"
 
 # Import * from config.settings (the named Python helper module).
 from config.settings import *  # noqa: E402, F403

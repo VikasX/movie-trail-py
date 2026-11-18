@@ -386,14 +386,19 @@ paths:
       - Authentication
       operationId: register
       summary: Request email registration; send verification without creating a session.
-      description: 'Request email registration; send verification without creating a session.
+      description: |-
+        Request email registration; send verification without creating a session.
 
+        Validation: Email is trimmed/case-normalized and unique ignoring case; validate Django
+        password rules and 12–128 characters. Existing email returns identical 202; pending
+        unverified user created only for new email.
 
-        Validation: Email is trimmed/case-normalized and unique ignoring case; validate Django password rules and
-        12–128 characters. Existing email returns identical 202; pending unverified user created only for new email.
+        Data source: PostgreSQL + email provider
 
-
-        Data source: PostgreSQL + email provider'
+        Missing email-provider configuration returns a uniform 503. With a configured provider,
+        recipient-specific transport failures retain generic 202 and are logged safely; acceptance
+        does not guarantee delivery. Initial registration rolls back on delivery failure to avoid
+        partial accounts.
       security: []
       responses:
         '202':
@@ -760,13 +765,17 @@ paths:
       - Authentication
       operationId: resendVerification
       summary: Request verification email with non-enumerating response.
-      description: 'Request verification email with non-enumerating response.
-
+      description: |-
+        Request verification email with non-enumerating response.
 
         Validation: Unknown query/body fields are rejected; apply global limits.
 
+        Data source: PostgreSQL + email provider
 
-        Data source: PostgreSQL + email provider'
+        Missing email-provider configuration returns a uniform 503. With a configured provider,
+        recipient-specific transport failures retain generic 202 and are logged safely; acceptance
+        does not guarantee delivery. Initial registration rolls back on delivery failure to avoid
+        partial accounts.
       security: []
       responses:
         '202':
@@ -859,13 +868,17 @@ paths:
       - Authentication
       operationId: requestPasswordReset
       summary: Request password reset email with non-enumerating response.
-      description: 'Request password reset email with non-enumerating response.
-
+      description: |-
+        Request password reset email with non-enumerating response.
 
         Validation: Unknown query/body fields are rejected; apply global limits.
 
+        Data source: PostgreSQL + email provider
 
-        Data source: PostgreSQL + email provider'
+        Missing email-provider configuration returns a uniform 503. With a configured provider,
+        recipient-specific transport failures retain generic 202 and are logged safely; acceptance
+        does not guarantee delivery. Initial registration rolls back on delivery failure to avoid
+        partial accounts.
       security: []
       responses:
         '202':

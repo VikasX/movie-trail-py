@@ -14,7 +14,7 @@ from django.utils import timezone
 from accounts.models import AccountToken
 
 # Import CacheLease, TitleSnapshot from catalog.models (our TMDB/normalization layer).
-from catalog.models import CacheLease, TitleSnapshot
+from catalog.models import CacheLease, RateLimitBucket, TitleSnapshot
 
 # Import SyncReceipt from library.models (our personal-library layer).
 from library.models import SyncReceipt
@@ -34,7 +34,7 @@ class Command(BaseCommand):
         now = timezone.now()
         # Repeat the following block for each model from (AccountToken, CacheLease, SyncReceipt).
         # Each iteration handles that one item/pair.
-        for model in (AccountToken, CacheLease, SyncReceipt):
+        for model in (AccountToken, CacheLease, RateLimitBucket, SyncReceipt):
             # Set (count, _): delete the selected row(s), applying their configured related-row
             # deletion rules.
             count, _ = model.objects.filter(expires_at__lt=now).delete()

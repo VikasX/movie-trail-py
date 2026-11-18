@@ -81,7 +81,11 @@ Verification expires in 24h, reset in 1h; tokens single use and stored hashed.
 Verify/reset pages must strip tokens from URLs after consumption and use no-referrer.
 No public endpoint lets clients grant staff or change email verification/provider IDs.
 Resend/reset requests always return the same accepted response for unknown emails.
-If email delivery is unavailable, return generic 503 for every request consistently.
+If email delivery is not configured, return generic 503 for every request consistently.
+With a configured provider, recipient-specific transport failures retain the generic
+202 response and emit a safe operator log; 202 does not guarantee delivery. Initial
+registration rolls back on delivery failure. This prevents SMTP failures from becoming
+an account-existence oracle; verification remains mandatory.
 
 Google flow: csrf → POST `/api/v1/auth/oauth/start/` with provider=google → browser
 navigates authorization_url → Google redirects to django-allauth's configured
@@ -389,11 +393,14 @@ this sync job and reconciles accepted keys, rather than deleting the whole names
 
 Django auth/contenttypes/sessions/admin and third-party integration tables are
 infrastructure, not new movie features. PostgreSQL-backed Django cache also holds
-expiring discovery snapshots, upstream response cache, dedup locks and throttle
-state; use ORM/DB-safe atomic operations for coordination, not process-local globals.
-Do not claim stock DRF cache throttles are exact under races; approximate client
-limits plus explicit outbound semaphore/backoff protect TMDB. Cache rows/expired
-receipts may be pruned through maintenance commands outside request critical paths.
+expiring discovery snapshots, upstream response cache and dedup locks. RateLimitBucket
+holds short-lived HMAC-keyed throttle counters with transactional row locks; use
+ORM/DB-safe atomic operations for coordination, not process-local globals.
+Stock cache increment operations are not assumed atomic. PostgreSQL row locks
+serialize throttle increments; fixed windows still permit boundary bursts and do
+not replace edge abuse protection. Bounded outbound calls/backoff protect TMDB.
+Cache rows/expired receipts may be pruned through maintenance commands outside
+request critical paths.
 Migrations implement this architecture; the existing User model is retained.
 ExternalIdentity is supplied by allauth SocialAccount; AccountToken is application-owned.
 CacheLease supplies bounded shared refresh coordination in addition to DatabaseCache.

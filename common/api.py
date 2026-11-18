@@ -2,11 +2,7 @@
 # feature service.
 # LEARNING TIP: read the matching walkthrough in docs/BACKEND_GUIDE.md, then follow the block
 # comments below.
-# Import settings from django.conf (Django framework/database/security helpers).
-from django.conf import settings
 
-# Import cache from django.core.cache (Django framework/database/security helpers).
-from django.core.cache import cache
 
 # Import ValidationError from django.core.exceptions (Django framework/database/security helpers).
 from django.core.exceptions import ValidationError
@@ -14,9 +10,6 @@ from django.core.exceptions import ValidationError
 # Import CsrfViewMiddleware from django.middleware.csrf (Django framework/database/security
 # helpers).
 from django.middleware.csrf import CsrfViewMiddleware
-
-# Import timezone from django.utils (Django framework/database/security helpers).
-from django.utils import timezone
 
 # Import AllowAny from rest_framework.permissions (DRF request/response helpers).
 from rest_framework.permissions import AllowAny
@@ -35,6 +28,7 @@ from common.contract import inputs
 
 # Import APIError from common.errors (our shared API layer).
 from common.errors import APIError
+from common.throttling import email_limit, request_limit
 
 
 # Require a signed-in, active account with a verified email before allowing a private action.
@@ -103,6 +97,8 @@ class ContractView(APIView):
             # Return the result to the caller: call self.http_method_not_allowed with the inputs
             # shown; its definition explains the checks, side effects and return value.
             return self.http_method_not_allowed(request)
+        # Apply the shared limit before parsing/validating attacker-controlled payloads.
+        request_limit(request)
         # Enter this branch only when request.path.endswith('guest-sync/') and
         # int(request.META.get('CONTENT_LENGTH') or 0) > 1048576. Otherwise execution uses its
         # alternative or continues below.
@@ -145,9 +141,8 @@ class ContractView(APIView):
             # Call require_user with the inputs shown; its definition explains the checks, side
             # effects and return value.
             require_user(request)
-        # Apply our own per-client throttle before executing the feature; this is separate from
-        # TMDB upstream throttling.
-        self.rate_limit(request, data)
+        # Add a normalized-email limit after schema validation, before any password hash or mail.
+        email_limit(request, data)
         # Attempt this block; the following except branches handle expected failures without
         # continuing the success path.
         try:
@@ -165,99 +160,6 @@ class ContractView(APIView):
         # Return the result to the caller: choose result when isinstance(result, Response);
         # otherwise use Response(result).
         return result if isinstance(result, Response) else Response(result)
-
-    # Count recent requests by account/IP and sometimes email; reject bursts with HTTP 429.
-    def rate_limit(self, request, data):
-        # INPUTS TO THIS FUNCTION: self = this class instance; request = current browser/user
-        # context; data = validated JSON.
-        # Import hashlib so the code below can use that module namespace.
-        import hashlib
-
-        # Enter this branch only when not settings.API_THROTTLING_ENABLED. Otherwise execution
-        # uses its alternative or continues below.
-        if not settings.API_THROTTLING_ENABLED:
-            # Exit this function now without a result; no remaining statements in this function
-            # run.
-            return
-        # authenticated holds whether Django recognized a signed-in user for this request. Next,
-        # read request.user.is_authenticated from the indicated object.
-        authenticated = request.user.is_authenticated
-        # identity holds the account/IP value used for counting requests, or the composite title
-        # pair in library helpers. Next, choose str(request.user.pk) when authenticated; otherwise
-        # use request.META.get('REMOTE_ADDR', 'unknown').
-        identity = (
-            str(request.user.pk) if authenticated else request.META.get("REMOTE_ADDR", "unknown")
-        )
-        # limit holds the cap chosen for this operation: request rate, page/candidate count, or
-        # recommendations. Next, use the fixed value 60.
-        limit = 60
-        # scope holds the counter category so login bursts and ordinary reading do not share one
-        # bucket. Next, choose 'read' when request.method in ('GET', 'HEAD'); otherwise use
-        # 'write'.
-        scope = "read" if request.method in ("GET", "HEAD") else "write"
-        # Enter this branch only when '/auth/' in request.path. Otherwise execution uses its
-        # alternative or continues below.
-        if "/auth/" in request.path:
-            # Set (scope, limit): keep these related values together as a tuple: 'auth', 5.
-            scope, limit = "auth", 5
-        # Enter this branch only when 'guest-sync' in request.path. Otherwise execution uses its
-        # alternative or continues below.
-        elif "guest-sync" in request.path:
-            # Set (scope, limit): keep these related values together as a tuple: 'sync', 5.
-            scope, limit = "sync", 5
-        # Enter this branch only when 'recommendations' in request.path. Otherwise execution uses
-        # its alternative or continues below.
-        elif "recommendations" in request.path:
-            # Set (scope, limit): keep these related values together as a tuple: 'recommend', 30
-            # if authenticated else 10.
-            scope, limit = "recommend", 30 if authenticated else 10
-        # Enter this branch only when '/shared/' in request.path. Otherwise execution uses its
-        # alternative or continues below.
-        elif "/shared/" in request.path:
-            # Set (scope, limit): keep these related values together as a tuple: 'share', 30.
-            scope, limit = "share", 30
-        # Set keys: build an ordered list of 1 entries.
-        keys = [identity]
-        # Enter this branch only when scope == 'auth' and data.get('email'). Otherwise execution
-        # uses its alternative or continues below.
-        if scope == "auth" and data.get("email"):
-            # Add one item at the end of this list.
-            keys.append(data["email"].strip().casefold())
-        # Repeat the following block for each identity from keys. Each iteration handles that one
-        # item/pair.
-        for identity in keys:
-            # digest holds a one-way fingerprint used in a lookup key instead of storing the
-            # original value in that key. Next, represent a hash as printable hexadecimal text;
-            # this does not reveal its original secret.
-            digest = hashlib.sha256(identity.encode()).hexdigest()
-            # Set key: evaluate f'throttle:{scope}:{int(timezone.now().timestamp()) //
-            # 60}:{digest}'.
-            key = f"throttle:{scope}:{int(timezone.now().timestamp()) // 60}:{digest}"
-            # Enter this branch only when cache.add(key, 1, 65). Otherwise execution uses its
-            # alternative or continues below.
-            if cache.add(key, 1, 65):
-                # count holds the current list length or request counter; it does not mean the
-                # full size of TMDB. Next, use the fixed value 1.
-                count = 1
-            else:
-                # Attempt this block; the following except branches handle expected failures
-                # without continuing the success path.
-                try:
-                    # count holds the current list length or request counter; it does not mean the
-                    # full size of TMDB. Next, increase the existing cache counter.
-                    count = cache.incr(key)
-                # Handle ValueError here. The original exception is not automatically safe to
-                # expose to the client.
-                except ValueError:
-                    # count holds the current list length or request counter; it does not mean the
-                    # full size of TMDB. Next, use the fixed value 1.
-                    count = 1
-            # Enter this branch only when count > limit. Otherwise execution uses its alternative
-            # or continues below.
-            if count > limit:
-                # Stop this action with safe API error 'rate_limited' (HTTP 429). The common
-                # handler builds its JSON envelope.
-                raise APIError("rate_limited", "Too many requests.", 429, retry_after=60)
 
     # DRF selects a method name; every supported method intentionally enters the same checklist.
     # Set get, post, put, patch, delete: reuse execute, which was prepared earlier in this

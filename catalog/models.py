@@ -72,6 +72,20 @@ class TitleSnapshot(models.Model):
 
 
 # A short database coordination lock, separate from the cached TMDB response itself.
+class RateLimitBucket(models.Model):
+    """Short-lived counters; contains no raw IP address, email, or session token."""
+
+    # Combines scope, minute and identity through a keyed one-way digest.
+    key = models.CharField(max_length=64, primary_key=True)
+    # Increments while the row is locked; stays at the limit once requests are denied.
+    count = models.PositiveIntegerField(default=0)
+    # cleanup_expired can remove old windows using this index.
+    expires_at = models.DateTimeField(db_index=True)
+
+    def __str__(self):
+        return "Rate limit bucket"
+
+
 class CacheLease(models.Model):
     # Set key: declare the CharField database field/rule shown below; this declaration itself does
     # not run a migration.

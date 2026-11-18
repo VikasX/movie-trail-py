@@ -3,8 +3,44 @@
 # Import uuid so the code below can use that module namespace.
 import uuid
 
+from django.db import DatabaseError
+
 # Import JsonResponse from django.http (Django framework/database/security helpers).
 from django.http import JsonResponse
+
+from common.errors import APIError
+from common.throttling import client_ip, consume
+
+
+class AdminLoginThrottleMiddleware:
+    """The Django admin login bypasses DRF, so protect its password checks too."""
+
+    def __init__(self, get_response):
+        self.get_response = get_response
+
+    def __call__(self, request):
+        if request.method == "POST" and request.path == "/admin/login/":
+            try:
+                consume("admin-login", "ip:" + client_ip(request), 5)
+            except (APIError, DatabaseError) as exc:
+                status = exc.status_code if isinstance(exc, APIError) else 503
+                response = JsonResponse(
+                    {
+                        "error": {
+                            "code": "rate_limited" if status == 429 else "service_unavailable",
+                            "message": "Too many requests."
+                            if status == 429
+                            else "Service unavailable.",
+                            "fields": {},
+                            "request_id": request.request_id,
+                        }
+                    },
+                    status=status,
+                )
+                if status == 429:
+                    response["Retry-After"] = str(exc.retry_after)
+                return response
+        return self.get_response(request)
 
 
 class RequestMiddleware:
@@ -30,8 +66,16 @@ class RequestMiddleware:
         # Enter this branch only when request.path.startswith(('/api/v1/auth/', '/api/v1/me/',
         # '/api/v1/shared/', '/accounts/')). Otherwise execution uses its alternative or continues
         # below.
-        if request.path.startswith(
-            ("/api/v1/auth/", "/api/v1/me/", "/api/v1/shared/", "/accounts/")
+        user = getattr(request, "user", None)
+        if (user and user.is_authenticated) or request.path.startswith(
+            (
+                "/api/v1/auth/",
+                "/api/v1/me/",
+                "/api/v1/shared/",
+                "/accounts/",
+                "/admin/",
+                "/api/v1/recommendations/",
+            )
         ):
             # Set response['Cache-Control']: use the fixed value 'private, no-store'.
             response["Cache-Control"] = "private, no-store"

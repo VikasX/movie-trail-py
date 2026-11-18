@@ -306,6 +306,8 @@ data. The small `class Meta` inside a model defines database rules/indexes, not 
   imported account collection; retained even when the collection is deleted.
 - **SyncReceipt:** import request fingerprint/result for replay-safe retries.
 - **CacheLease:** short coordination lock for TMDB refresh work.
+- **RateLimitBucket:** a short-lived request counter. PostgreSQL locks the row while
+  it changes, so two Vercel instances cannot overwrite each other's increments.
 - **SampleRecord:** original database smoke-test row, independent of product titles.
 
 `ForeignKey` means “many rows may point to this parent.” `OneToOneField` means only
@@ -460,6 +462,7 @@ it must preserve newer local edits and rejected items.
 
 - `common/urls.py`: add/find a product route and its feature handler here.
 - `common/api.py`: request security, limits and dispatch.
+- `common/throttling.py`: shared request/email counters and trusted client-IP handling.
 - `common/authentication.py`: Django session authentication's API 401 behavior.
 - `common/contract.py`: strict contract-based input serializer/validation.
 - `common/errors.py`: safe exception-to-JSON translation.
@@ -474,7 +477,7 @@ it must preserve newer local edits and rejected items.
 - `accounts/services.py`: email/password/profile workflows.
 - `accounts/oauth.py`: Google/allauth policies, initiation and callback adapter.
 - `accounts/admin.py`: preference management screen.
-- `catalog/models.py`: referenced metadata and shared refresh leases.
+- `catalog/models.py`: referenced metadata, shared refresh leases and rate-limit buckets.
 - `catalog/normalization.py`: card/person/video translation, genre/mood mappings.
 - `catalog/client.py`: TMDB HTTP/cache/error handling.
 - `catalog/leases.py`: short shared refresh coordination.

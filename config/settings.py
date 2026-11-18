@@ -7,6 +7,7 @@ import os
 
 # Import Path from pathlib (the named Python helper module).
 from pathlib import Path
+from urllib.parse import urlsplit
 
 # Import environ so the code below can use that module namespace.
 import environ
@@ -24,6 +25,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # Set env: call environ.Env with the inputs shown; its definition explains the checks, side
 # effects and return value.
 env = environ.Env()
+IS_VERCEL = bool(os.environ.get("VERCEL"))
 # Deployment environment variables take precedence over the local file.
 # Enter this branch only when not os.environ.get('VERCEL') and (BASE_DIR / '.env').is_file().
 # Otherwise execution uses its alternative or continues below.
@@ -66,7 +68,9 @@ if os.environ.get("VERCEL"):
             ALLOWED_HOSTS.append(hostname)
 # Enter this branch only when not DEBUG and (not ALLOWED_HOSTS or '*' in ALLOWED_HOSTS). Otherwise
 # execution uses its alternative or continues below.
-if not DEBUG and (not ALLOWED_HOSTS or "*" in ALLOWED_HOSTS):
+if not DEBUG and (
+    not ALLOWED_HOSTS or any("*" in host or host.startswith(".") for host in ALLOWED_HOSTS)
+):
     # Raise ImproperlyConfigured; normal execution of this block stops here.
     raise ImproperlyConfigured("Set explicit ALLOWED_HOSTS for production.")
 
@@ -97,6 +101,7 @@ INSTALLED_APPS = [
 MIDDLEWARE = [
     "common.middleware.RequestMiddleware",
     "django.middleware.security.SecurityMiddleware",
+    "common.middleware.AdminLoginThrottleMiddleware",
     "corsheaders.middleware.CorsMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
@@ -217,6 +222,9 @@ CORS_ALLOWED_ORIGINS = env.list("CORS_ALLOWED_ORIGINS", default=[])
 CORS_URLS_REGEX = r"^/(api|accounts)/.*$"
 # Set CORS_ALLOW_CREDENTIALS: use the boolean True.
 CORS_ALLOW_CREDENTIALS = True
+CORS_ALLOW_ALL_ORIGINS = False
+# Vercel's protocol header is trusted above; browser-supplied forwarded hosts are not.
+USE_X_FORWARDED_HOST = False
 # Set CSRF_TRUSTED_ORIGINS: call env.list with the inputs shown; its definition explains the
 # checks, side effects and return value.
 CSRF_TRUSTED_ORIGINS = env.list("CSRF_TRUSTED_ORIGINS", default=[])
@@ -271,6 +279,39 @@ BACKEND_PUBLIC_ORIGIN = env(
 if FRONTEND_PUBLIC_ORIGIN and FRONTEND_PUBLIC_ORIGIN not in CSRF_TRUSTED_ORIGINS:
     # Add one item at the end of this list.
     CSRF_TRUSTED_ORIGINS.append(FRONTEND_PUBLIC_ORIGIN)
+
+
+def validate_origin(value):
+    """Origins cannot contain credentials, callback paths, queries or wildcards."""
+    try:
+        parsed = urlsplit(value)
+        valid = (
+            parsed.hostname
+            and parsed.port != 0
+            and not parsed.username
+            and not parsed.password
+            and not parsed.path
+            and not parsed.query
+            and not parsed.fragment
+            and "*" not in value
+            and "\\" not in value
+            and not any(character.isspace() for character in value)
+            and parsed.scheme in (("http", "https") if DEBUG else ("https",))
+        )
+    except ValueError:
+        valid = False
+    if not valid:
+        raise ImproperlyConfigured("Use exact HTTP(S) origins; production origins require HTTPS.")
+
+
+for origin in [
+    FRONTEND_PUBLIC_ORIGIN,
+    BACKEND_PUBLIC_ORIGIN,
+    *CORS_ALLOWED_ORIGINS,
+    *CSRF_TRUSTED_ORIGINS,
+]:
+    if origin:
+        validate_origin(origin)
 # Set CSRF_FAILURE_VIEW: use the fixed value 'common.middleware.csrf_failure'.
 CSRF_FAILURE_VIEW = "common.middleware.csrf_failure"
 # Set CSRF_COOKIE_SAMESITE, SESSION_COOKIE_SAMESITE: use the fixed value 'Lax'.
@@ -356,6 +397,8 @@ DEFAULT_FROM_EMAIL = env("DEFAULT_FROM_EMAIL", default="cinescope@localhost")
 # Set TMDB_BASE_URL: call env('TMDB_BASE_URL', default='https://api.themoviedb.org/3').rstrip with
 # the inputs shown; its definition explains the checks, side effects and return value.
 TMDB_BASE_URL = env("TMDB_BASE_URL", default="https://api.themoviedb.org/3").rstrip("/")
+if TMDB_BASE_URL != "https://api.themoviedb.org/3":
+    raise ImproperlyConfigured("TMDB_BASE_URL must use the trusted TMDB API origin and /3 path.")
 # Set TMDB_READ_ACCESS_TOKEN: call env with the inputs shown; its definition explains the checks,
 # side effects and return value.
 TMDB_READ_ACCESS_TOKEN = env("TMDB_READ_ACCESS_TOKEN", default="")
@@ -389,7 +432,13 @@ LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,
     "filters": {"redact": {"()": "common.logging.RedactCapabilities"}},
-    "formatters": {"standard": {"format": "{asctime} {levelname} {name}: {message}", "style": "{"}},
+    "formatters": {
+        "standard": {
+            "()": "common.logging.SafeFormatter",
+            "format": "{asctime} {levelname} {name}: {message}",
+            "style": "{",
+        }
+    },
     "handlers": {
         "console": {
             "class": "logging.StreamHandler",
@@ -405,6 +454,6 @@ LOGGING = {
 LOGGING["loggers"].update(
     {
         name: {"handlers": ["console"], "level": "WARNING", "propagate": False}
-        for name in ("httpx", "httpcore", "allauth")
+        for name in ("httpx", "httpcore", "allauth", "django.server")
     }
 )

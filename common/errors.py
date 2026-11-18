@@ -72,6 +72,8 @@ def handler(exc, context):
     # Set request_id: call getattr with the inputs shown; its definition explains the checks, side
     # effects and return value.
     request_id = getattr(request, "request_id", "")
+    if isinstance(exc, RecursionError):
+        return error_response("validation_error", "Request nesting is too deep.", 400, request_id)
     # Enter this branch only when isinstance(exc, RequestDataTooBig). Otherwise execution uses its
     # alternative or continues below.
     if isinstance(exc, RequestDataTooBig):

@@ -3,6 +3,10 @@
 New to this codebase? Start with [the plain-language backend guide](docs/BACKEND_GUIDE.md).
 It includes request walkthroughs, a file map and a recommended reading order.
 
+Before the next production release, read [the security audit and required Supabase actions](docs/SECURITY_AUDIT.md).
+The local hardening includes a new rate-limit table; the audit also identifies a
+separate Supabase Data API permissions blocker that requires manual containment.
+
 Python 3.12+, Django/DRF, Supabase PostgreSQL, httpx/TMDB, django-allauth Google OAuth,
 and session/CSRF authentication. Implements the versioned `1.0.0-draft.2` contract:
 35 `/api/v1/` method/path operations (including three existing scaffold operations),

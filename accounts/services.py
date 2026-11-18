@@ -1,6 +1,7 @@
 # FILE PURPOSE: Account actions: email login, verification, reset, profile and CSRF bootstrap.
 # Import hashlib so the code below can use that module namespace.
 import hashlib
+import logging
 
 # Import secrets so the code below can use that module namespace.
 import secrets
@@ -62,6 +63,7 @@ from common.errors import APIError
 User = get_user_model()
 # Set MESSAGE: build a dictionary with named fields such as detail.
 MESSAGE = {"detail": "If eligible, instructions have been sent."}
+logger = logging.getLogger(__name__)
 
 
 # Turn a secret token into a one-way hash so the database can look it up without storing the raw
@@ -237,6 +239,12 @@ def register(request, params, data):
             # Intentionally do nothing in this branch; the surrounding function continues
             # afterward.
             pass  # A concurrent registration must not disclose account existence.
+        except APIError as exc:
+            if exc.status_code != 503:
+                raise
+            # Rollback leaves no partially registered account. Returning a different
+            # status only for new accounts would disclose registered addresses.
+            logger.error("Account instruction delivery failed; registration rolled back.")
     # Return the result to the caller: call Response with the inputs shown; its definition
     # explains the checks, side effects and return value.
     return Response(MESSAGE, status=202)
@@ -261,12 +269,8 @@ def login(request, params, data):
     # Enter this branch only when not user or not valid or (not user.is_active). Otherwise
     # execution uses its alternative or continues below.
     if not user or not valid or not user.is_active:
-        # Enter this branch only when not user. Otherwise execution uses its alternative or
-        # continues below.
-        if not user:
-            # Call user().set_password with the inputs shown; its definition explains the checks,
-            # side effects and return value.
-            User().set_password(data["password"])
+        # Django already performs one dummy hash for the unusable candidate password.
+        # A second dummy hash would make nonexistent accounts distinguishably slower.
         # Stop this action with safe API error 'authentication_required' (HTTP 401). The common
         # handler builds its JSON envelope.
         raise APIError("authentication_required", "Invalid email or password.", 401)
@@ -331,7 +335,14 @@ def send_instructions(request, params, data):
     ):
         # Call issue_token with the inputs shown; its definition explains the checks, side effects
         # and return value.
-        issue_token(user, purpose)
+        try:
+            issue_token(user, purpose)
+        except APIError as exc:
+            if exc.status_code != 503:
+                raise
+            # A recipient-specific SMTP error must not reveal account existence.
+            # Missing provider configuration still fails uniformly in email_ready().
+            logger.error("Account instruction delivery failed; no token was retained.")
     # Return the result to the caller: call Response with the inputs shown; its definition
     # explains the checks, side effects and return value.
     return Response(MESSAGE, status=202)

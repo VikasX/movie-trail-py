@@ -4,6 +4,7 @@
 # comments below.
 # Import date, timedelta from datetime (the named Python helper module).
 from datetime import date, timedelta
+from urllib.parse import urlsplit
 
 # Import cache from django.core.cache (Django framework/database/security helpers).
 from django.core.cache import cache
@@ -13,7 +14,16 @@ from catalog.client import TMDBClient
 
 # Import GENRE_KEYS, GENRES, MOODS, image, person, summary, trailers from catalog.normalization
 # (our TMDB/normalization layer).
-from catalog.normalization import GENRE_KEYS, GENRES, MOODS, image, person, summary, trailers
+from catalog.normalization import (
+    GENRE_KEYS,
+    GENRES,
+    MOODS,
+    image,
+    person,
+    summary,
+    trailers,
+    validated_upstream,
+)
 
 # Import APIError from common.errors (our shared API layer).
 from common.errors import APIError
@@ -24,6 +34,7 @@ from common.pagination import snapshot_page
 
 # Reuse configuration from shared cache, or fetch languages/countries and combine them with our
 # mappings.
+@validated_upstream
 def metadata_values():
     # hit holds a remembered shared-cache result; None means the lookup did not find a usable
     # entry. Next, read a shared cache entry, or None on a miss.
@@ -319,6 +330,7 @@ def raw_detail(media, tmdb_id, language="en-US", append=False):
 
 # Fetch a small source window, normalize/filter it and sort it; never crawl the entire
 # catalogue.
+@validated_upstream
 def candidates(filters, language="en-US", region="IN", seed_genres=None):
     # INPUTS TO THIS FUNCTION: filters = argument supplied by the caller; language = argument
     # supplied by the caller; region = argument supplied by the caller; seed_genres = argument
@@ -649,6 +661,7 @@ def discover(request, params, data):
 
 # Find people by name so the UI can select a precise actor/director ID rather than guessing a
 # name.
+@validated_upstream
 def search_people(request, params, data):
     # INPUTS TO THIS FUNCTION: request = current browser/user context; params = cleaned URL/query
     # values; data = validated JSON.
@@ -707,6 +720,7 @@ def search_people(request, params, data):
 
 # Combine core title data, credits, trailers and regional availability into the detail-page
 # response.
+@validated_upstream
 def details(request, params, data):
     # INPUTS TO THIS FUNCTION: request = current browser/user context; params = cleaned URL/query
     # values; data = validated JSON.
@@ -796,6 +810,18 @@ def details(request, params, data):
         # Set availability['link']: look up a named setting/value or make the indicated GET call;
         # the surrounding object determines which.
         availability["link"] = region.get("link")
+        # Only emit the documented TMDB availability destination. The frontend
+        # must never receive a javascript: link or an arbitrary upstream hostname.
+        if availability["link"]:
+            link = urlsplit(availability["link"])
+            if (
+                link.scheme != "https"
+                or link.hostname != "www.themoviedb.org"
+                or link.username
+                or link.password
+                or link.port not in (None, 443)
+            ):
+                raise ValueError("Untrusted availability URL")
         # Repeat the following block for each kind from ('flatrate', 'free', 'ads', 'rent',
         # 'buy'). Each iteration handles that one item/pair.
         for kind in ("flatrate", "free", "ads", "rent", "buy"):
@@ -815,7 +841,7 @@ def details(request, params, data):
             availability["status"] = "available"
     # Handle (APIError, KeyError, TypeError, AttributeError) here. The original exception is not
     # automatically safe to expose to the client.
-    except (APIError, KeyError, TypeError, AttributeError):
+    except (APIError, KeyError, TypeError, AttributeError, ValueError):
         # Set availability['status']: use the fixed value 'unavailable'.
         availability["status"] = "unavailable"
         # Write these fields directly on the matching rows through the orm.
