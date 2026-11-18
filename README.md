@@ -1,5 +1,8 @@
 # CineScope Django backend
 
+New to this codebase? Start with [the plain-language backend guide](docs/BACKEND_GUIDE.md).
+It includes request walkthroughs, a file map and a recommended reading order.
+
 Python 3.12+, Django/DRF, Supabase PostgreSQL, httpx/TMDB, django-allauth Google OAuth,
 and session/CSRF authentication. Implements the versioned `1.0.0-draft.2` contract:
 35 `/api/v1/` method/path operations (including three existing scaffold operations),

@@ -1,22 +1,45 @@
+# FILE PURPOSE: Product route map: each URL/method points to an account, catalogue or library
+# service.
+# Import path from django.urls (Django framework/database/security helpers).
 from django.urls import path
 
+# Import oauth from accounts (our account layer).
 from accounts import oauth
+
+# Import services from accounts (our account layer).
 from accounts import services as accounts
+
+# Import recommendations from catalog (our TMDB/normalization layer).
 from catalog import recommendations
+
+# Import services from catalog (our TMDB/normalization layer).
 from catalog import services as catalog
+
+# Import endpoint from common.api (our shared API layer).
 from common.api import endpoint
+
+# Import services from library (our personal-library layer).
 from library import services as library
+
+# Import sync from library.sync (our personal-library layer).
 from library.sync import sync
 
+# Set app_name: use the fixed value 'api'.
 app_name = "api"
 
 
+# Attach the real Django URL spelling to its contract spelling and service handlers.
 def route(url, contract, **handlers):
+    # INPUTS TO THIS FUNCTION: url = argument supplied by the caller; contract = argument supplied
+    # by the caller.
+    # Return the result to the caller: call path with the inputs shown; its definition explains
+    # the checks, side effects and return value.
     return path(
         url, endpoint("/api/v1/" + contract, **handlers), name=contract.replace("/", "-").strip("-")
     )
 
 
+# Set urlpatterns: build an ordered list of 25 entries.
 urlpatterns = [
     route("metadata/", "metadata/", get=catalog.metadata),
     route("auth/csrf/", "auth/csrf/", get=accounts.csrf),
